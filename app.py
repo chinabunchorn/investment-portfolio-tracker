@@ -5,13 +5,11 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-# --- Configuration ---
 st.set_page_config(page_title="Portfolio Tracker", layout="wide")
-st.title("🚀 My Wealth Dashboard")
+st.title("Wealth Dashboard")
 
 DB_NAME = 'portfolio.db'
 
-# --- Backend Logic ---
 def run_query(query, params=()):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -35,69 +33,72 @@ def get_current_fx_rate():
 
 def calculate_portfolio(df):
     """
-    Core Logic: Converts raw transactions into 'Current Holdings'
-    Returns: DataFrame of assets with current market value in THB
+     //(P/L)
     """
     if df.empty:
-        return pd.DataFrame(), 0.0
+        return pd.DataFrame(), 0.0, 0.0, 0.0 
+    
 
-    # 1. Calculate Asset Holdings (Shares)
-    # Filter only BUY/SELL
     trades = df[df['type'].isin(['BUY', 'SELL'])].copy()
     
-    # Make SELL quantity negative
+
+    trades['cost_amount'] = trades['quantity'] * trades['price']
     trades.loc[trades['type'] == 'SELL', 'quantity'] *= -1
+    trades.loc[trades['type'] == 'SELL', 'cost_amount'] *= -1
     
-    # Group by Ticker to find Net Quantity
-    holdings = trades.groupby('ticker')['quantity'].sum().reset_index()
+    summary = trades.groupby('ticker').agg({
+        'quantity': 'sum',
+        'cost_amount': 'sum'
+    }).reset_index()
     
-    # Remove assets we no longer hold (Qty approx 0)
-    holdings = holdings[holdings['quantity'] > 0.00001]
+    holdings = summary[summary['quantity'] > 0.00001].copy()
     
-    # 2. Get Real-time Prices & Convert to THB
     live_fx = get_current_fx_rate()
-    total_portfolio_value_thb = 0
     
     current_prices = []
-    market_values_thb = []
+    market_values = []
+    pnl_values = []
+    pnl_percents = []
     
     for index, row in holdings.iterrows():
         ticker = row['ticker']
         qty = row['quantity']
+        total_cost = row['cost_amount']
         
-        # Fetch Live Price
         try:
-            # Assume tickers with '-' are Crypto/Forex, others are US Stocks
             stock = yf.Ticker(ticker)
             history = stock.history(period="1d")
             if not history.empty:
                 current_price = history['Close'].iloc[-1]
             else:
-                current_price = 0 # Fallback
+                current_price = 0
         except:
             current_price = 0
             
-        # Determine Currency (Simple Logic for MVP: If ticker is AAPL -> USD)
-        # In a full app, we would look up the asset's currency from a master table.
-        # Here, let's assume everything fetched via YF is USD for simplicity, unless it's THB.
-        is_usd = True # Assumption for MVP
+        market_value = qty * current_price
         
-        # Calculate Value
-        val_usd = qty * current_price
-        val_thb = val_usd * live_fx if is_usd else val_usd
+        unrealized_pnl = market_value - total_cost
+        pnl_percent = (unrealized_pnl / total_cost * 100) if total_cost != 0 else 0
         
         current_prices.append(current_price)
-        market_values_thb.append(val_thb)
-        total_portfolio_value_thb += val_thb
+        market_values.append(market_value)
+        pnl_values.append(unrealized_pnl)
+        pnl_percents.append(pnl_percent)
 
-    holdings['Current Price ($)'] = current_prices
-    holdings['Value (THB)'] = market_values_thb
+    holdings['Current Price'] = current_prices
+    holdings['Market Value'] = market_values
+    holdings['Cost Basis'] = holdings['cost_amount']
+    holdings['Unrealized P/L'] = pnl_values
+    holdings['% P/L'] = pnl_percents
     
-    return holdings, total_portfolio_value_thb
+    total_portfolio_val_thb = holdings['Market Value'].sum() * live_fx
+    total_cost_thb = holdings['Cost Basis'].sum() * live_fx
+    total_pnl_thb = total_portfolio_val_thb - total_cost_thb
+    
+    return holdings, total_portfolio_val_thb, total_cost_thb, total_pnl_thb
 
-# --- Sidebar: Data Entry (Same as before) ---
 with st.sidebar:
-    st.header("📝 New Transaction")
+    st.header("New Transaction")
     tx_type = st.radio("Type", ["BUY", "SELL", "DEPOSIT", "WITHDRAW", "DIVIDEND"])
     live_fx = get_current_fx_rate()
 
@@ -175,40 +176,34 @@ with st.sidebar:
                  except Exception as e:
                     st.error(f"Error: {e}")
 
-# --- MAIN PAGE: THE DASHBOARD ---
 
-# Load Data
 raw_df = load_data()
 
-# Create Tabs
-tab1, tab2 = st.tabs(["📊 Dashboard", "📝 Raw Data"])
+tab1, tab2 = st.tabs(["Dashboard", "Raw Data"])
 
 with tab1:
     if raw_df.empty:
-        st.info("👋 Welcome! Please add your first transaction in the sidebar.")
+        st.info("add your first transaction.")
     else:
-        # 1. Calculate Data
-        holdings_df, total_value = calculate_portfolio(raw_df)
+        holdings_df, total_value, total_cost, total_pnl = calculate_portfolio(raw_df)
         
-        # 2. Key Metrics (Top Row)
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Portfolio Value", f"฿{total_value:,.2f}")
-        col2.metric("FX Rate (USD/THB)", f"฿{live_fx:.2f}")
-        col3.metric("Active Assets", len(holdings_df))
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Portfolio Value", f"฿{total_value:,.0f}")
+        col2.metric("Total Cost", f"฿{total_cost:,.0f}")
+        col3.metric("Unrealized P/L", f"฿{total_pnl:,.0f}", 
+                    delta=f"{(total_pnl/total_cost*100):.2f}%" if total_cost!=0 else "0%")
+        col4.metric("FX Rate", f"฿{live_fx:.2f}")
         
         st.divider()
         
-        # 3. Charts & Tables (Middle)
-        col_chart, col_table = st.columns([1, 1])
+        col_chart, col_table = st.columns([1, 1.5]) 
         
         with col_chart:
             st.subheader("Asset Allocation")
             if not holdings_df.empty:
-                # Matplotlib Pie Chart
                 fig, ax = plt.subplots()
-                ax.pie(holdings_df['Value (THB)'], labels=holdings_df['ticker'], autopct='%1.1f%%', startangle=90)
-                ax.axis('equal') # Equal aspect ratio ensures that pie is drawn as a circle.
-                # Transparent background for dark mode theme
+                ax.pie(holdings_df['Market Value'], labels=holdings_df['ticker'], autopct='%1.1f%%', startangle=90)
+                ax.axis('equal')
                 fig.patch.set_alpha(0) 
                 st.pyplot(fig)
             else:
@@ -216,14 +211,42 @@ with tab1:
 
         with col_table:
             st.subheader("Current Holdings")
-            st.dataframe(
-                holdings_df, 
-                column_config={
-                    "Current Price ($)": st.column_config.NumberColumn(format="$%.2f"),
-                    "Value (THB)": st.column_config.NumberColumn(format="฿%.2f"),
-                },
-                hide_index=True
-            )
+            
+            if holdings_df.empty:
+                st.write("No assets found.")
+            else:
+                for index, row in holdings_df.iterrows():
+                    ticker = row['ticker']
+                    qty = row['quantity']
+                    current_price = row['Current Price']
+                    market_val = row['Market Value']
+                    cost_basis = row['Cost Basis']
+                    pnl = row['Unrealized P/L']
+                    pnl_pct = row['% P/L']
+                    
+                    if pnl >= 0:
+                        icon = ""
+                        color_class = "green" 
+                    else:
+                        icon = ""
+                        color_class = "red"
+
+                    label = f"{icon} **{ticker}** | ${market_val:,.2f} ({pnl_pct:+.2f}%)"
+                    
+                    with st.expander(label):
+                        c1, c2, c3 = st.columns(3)
+                        
+                        avg_cost = cost_basis / qty if qty != 0 else 0
+                        
+                        c1.metric("Quantity", f"{qty:,.4f}")
+                        c2.metric("Avg Cost", f"${avg_cost:,.2f}")
+                        c3.metric("Current Price", f"${current_price:,.2f}")
+                        
+                        st.divider()
+                        
+                        c4, c5 = st.columns([2, 1])
+                        c4.metric("Total P/L ($)", f"${pnl:,.2f}", delta=f"{pnl_pct:.2f}%")
+                        c5.caption(f"Total Cost: ${cost_basis:,.2f}")
 
 with tab2:
     st.subheader("Transaction History")
