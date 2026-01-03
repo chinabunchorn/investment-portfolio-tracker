@@ -31,24 +31,28 @@ def get_current_fx_rate():
     except:
         return 34.0
 
+def classify_asset(ticker, platform):
+    if "-" in ticker or platform == "Binance":
+        return "Crypto "
+    elif ticker in ["THB", "USD"]:
+        return "Cash "
+    else:
+        return "Stocks / ETF"
+    
 def calculate_portfolio(df):
-    """
-     //(P/L)
-    """
     if df.empty:
         return pd.DataFrame(), 0.0, 0.0, 0.0 
-    
 
     trades = df[df['type'].isin(['BUY', 'SELL'])].copy()
     
-
     trades['cost_amount'] = trades['quantity'] * trades['price']
     trades.loc[trades['type'] == 'SELL', 'quantity'] *= -1
     trades.loc[trades['type'] == 'SELL', 'cost_amount'] *= -1
     
     summary = trades.groupby('ticker').agg({
         'quantity': 'sum',
-        'cost_amount': 'sum'
+        'cost_amount': 'sum',
+        'platform': 'first' 
     }).reset_index()
     
     holdings = summary[summary['quantity'] > 0.00001].copy()
@@ -59,11 +63,15 @@ def calculate_portfolio(df):
     market_values = []
     pnl_values = []
     pnl_percents = []
+    asset_categories = [] 
     
     for index, row in holdings.iterrows():
         ticker = row['ticker']
         qty = row['quantity']
         total_cost = row['cost_amount']
+        
+    
+        this_category = classify_asset(ticker, row['platform'])
         
         try:
             stock = yf.Ticker(ticker)
@@ -76,7 +84,6 @@ def calculate_portfolio(df):
             current_price = 0
             
         market_value = qty * current_price
-        
         unrealized_pnl = market_value - total_cost
         pnl_percent = (unrealized_pnl / total_cost * 100) if total_cost != 0 else 0
         
@@ -84,13 +91,15 @@ def calculate_portfolio(df):
         market_values.append(market_value)
         pnl_values.append(unrealized_pnl)
         pnl_percents.append(pnl_percent)
+        asset_categories.append(this_category)
 
     holdings['Current Price'] = current_prices
     holdings['Market Value'] = market_values
     holdings['Cost Basis'] = holdings['cost_amount']
     holdings['Unrealized P/L'] = pnl_values
     holdings['% P/L'] = pnl_percents
-    
+    holdings['Category'] = asset_categories 
+   
     total_portfolio_val_thb = holdings['Market Value'].sum() * live_fx
     total_cost_thb = holdings['Cost Basis'].sum() * live_fx
     total_pnl_thb = total_portfolio_val_thb - total_cost_thb
@@ -131,7 +140,7 @@ with st.sidebar:
             ticker = crypto_map.get(raw_ticker, raw_ticker)
             
             if ticker != raw_ticker:
-                st.caption(f"💡 Auto-converted '{raw_ticker}' to '{ticker}' for price fetching")
+                st.caption(f"Auto-converted '{raw_ticker}' to '{ticker}' for price fetching")
 
             col1, col2 = st.columns(2)
             with col1: 
@@ -187,66 +196,75 @@ with tab1:
     else:
         holdings_df, total_value, total_cost, total_pnl = calculate_portfolio(raw_df)
         
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Portfolio Value", f"฿{total_value:,.0f}")
-        col2.metric("Total Cost", f"฿{total_cost:,.0f}")
-        col3.metric("Unrealized P/L", f"฿{total_pnl:,.0f}", 
+  
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Portfolio Value", f"฿{total_value:,.0f}")
+        m2.metric("Total Cost", f"฿{total_cost:,.0f}")
+        m3.metric("Unrealized P/L", f"฿{total_pnl:,.0f}", 
                     delta=f"{(total_pnl/total_cost*100):.2f}%" if total_cost!=0 else "0%")
-        col4.metric("FX Rate", f"฿{live_fx:.2f}")
+        m4.metric("FX Rate", f"฿{live_fx:.2f}")
         
         st.divider()
+
+        st.subheader(" Asset Allocation")
         
-        col_chart, col_table = st.columns([1, 1.5]) 
+        c_chart1, c_chart2 = st.columns(2)
         
-        with col_chart:
-            st.subheader("Asset Allocation")
+        with c_chart1:
+            st.caption("By Ticker")
             if not holdings_df.empty:
-                fig, ax = plt.subplots()
-                ax.pie(holdings_df['Market Value'], labels=holdings_df['ticker'], autopct='%1.1f%%', startangle=90)
+                fig, ax = plt.subplots(figsize=(6, 6))
+                ax.pie(holdings_df['Market Value'], labels=holdings_df['ticker'], 
+                       autopct='%1.1f%%', startangle=90, 
+                       textprops={'fontsize': 12, 'color': 'white'})
                 ax.axis('equal')
-                fig.patch.set_alpha(0) 
-                st.pyplot(fig)
-            else:
-                st.write("No active holdings.")
+                fig.patch.set_alpha(0)
+                st.pyplot(fig, use_container_width=True)
 
-        with col_table:
-            st.subheader("Current Holdings")
-            
-            if holdings_df.empty:
-                st.write("No assets found.")
-            else:
-                for index, row in holdings_df.iterrows():
-                    ticker = row['ticker']
-                    qty = row['quantity']
-                    current_price = row['Current Price']
-                    market_val = row['Market Value']
-                    cost_basis = row['Cost Basis']
-                    pnl = row['Unrealized P/L']
-                    pnl_pct = row['% P/L']
-                    
-                    if pnl >= 0:
-                        icon = ""
-                        color_class = "green" 
-                    else:
-                        icon = ""
-                        color_class = "red"
+        with c_chart2:
+            st.caption("By Risk Class")
+            if 'Category' in holdings_df.columns:
+                class_df = holdings_df.groupby('Category')['Market Value'].sum()
+                fig2, ax2 = plt.subplots(figsize=(6, 6))
+                ax2.pie(class_df, labels=class_df.index, 
+                        autopct='%1.1f%%', startangle=90,
+                        textprops={'fontsize': 12, 'color': 'white'})
+                ax2.axis('equal')
+                fig2.patch.set_alpha(0)
+                st.pyplot(fig2, use_container_width=True)
 
-                    label = f"{icon} **{ticker}** | ${market_val:,.2f} ({pnl_pct:+.2f}%)"
+        st.divider()
+
+        st.subheader("Current Holdings")
+        
+        if holdings_df.empty:
+            st.write("No assets found.")
+        else:
+            for index, row in holdings_df.iterrows():
+                ticker = row['ticker']
+                qty = row['quantity']
+                current_price = row['Current Price']
+                market_val = row['Market Value']
+                cost_basis = row['Cost Basis']
+                pnl = row['Unrealized P/L']
+                pnl_pct = row['% P/L']
+
+
+                label = f"**{ticker}** | ฿{market_val:,.2f} ({pnl_pct:+.2f}%)"
+
+                with st.expander(label):
+                    c1, c2, c3 = st.columns(3)
+                    avg_cost = cost_basis / qty if qty != 0 else 0
                     
-                    with st.expander(label):
-                        c1, c2, c3 = st.columns(3)
-                        
-                        avg_cost = cost_basis / qty if qty != 0 else 0
-                        
-                        c1.metric("Quantity", f"{qty:,.4f}")
-                        c2.metric("Avg Cost", f"${avg_cost:,.2f}")
-                        c3.metric("Current Price", f"${current_price:,.2f}")
-                        
-                        st.divider()
-                        
-                        c4, c5 = st.columns([2, 1])
-                        c4.metric("Total P/L ($)", f"${pnl:,.2f}", delta=f"{pnl_pct:.2f}%")
-                        c5.caption(f"Total Cost: ${cost_basis:,.2f}")
+                    c1.metric("Quantity", f"{qty:,.4f}")
+                    c2.metric("Avg Cost", f"${avg_cost:,.2f}")
+                    c3.metric("Current Price", f"${current_price:,.2f}")
+                    
+                    st.divider()
+                    
+                    c4, c5 = st.columns([2, 1])
+                    c4.metric("Total P/L", f"฿{pnl:,.2f}", delta=f"{pnl_pct:.2f}%")
+                    c5.caption(f"Total Cost: ฿{cost_basis:,.2f}")
 
 with tab2:
     st.subheader("Transaction History")
