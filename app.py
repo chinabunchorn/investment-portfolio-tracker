@@ -30,32 +30,91 @@ def get_current_fx_rate():
         return 34.0
     except:
         return 34.0
+    
+@st.cache_data(ttl=3600*24)
+def get_stock_sector(ticker):
+    if ticker in ["THB", "USD"]: return "Cash & Equiv."
+    
+    if ticker.endswith("-USD"): return "Crypto"
+    
+    try:
+        stock = yf.Ticker(ticker)
+        sector = stock.info.get('sector', 'Others')
+       
+        if sector == "Others":
+            quote_type = stock.info.get('quoteType', '')
+            if quote_type == 'ETF':
+                return "ETF / Fund"
+                
+        return sector
+    except:
+        return "Others"
 
 def classify_asset(ticker, platform):
-    if "-" in ticker or platform == "Binance":
-        return "Crypto "
-    elif ticker in ["THB", "USD"]:
+    if platform in ["Binance"]: 
+        return "Crypto"
+    
+    if ticker.endswith("-USD"): 
+        return "Crypto"
+        
+    if ticker in ["THB", "USD"]: 
         return "Cash "
-    else:
-        return "Stocks / ETF"
+        
+    return "Stock"
     
 def calculate_portfolio(df):
     if df.empty:
-        return pd.DataFrame(), 0.0, 0.0, 0.0 
+        return pd.DataFrame(), 0.0, 0.0, 0.0
 
-    trades = df[df['type'].isin(['BUY', 'SELL'])].copy()
+    df = df.sort_values('date')
     
-    trades['cost_amount'] = trades['quantity'] * trades['price']
-    trades.loc[trades['type'] == 'SELL', 'quantity'] *= -1
-    trades.loc[trades['type'] == 'SELL', 'cost_amount'] *= -1
-    
-    summary = trades.groupby('ticker').agg({
-        'quantity': 'sum',
-        'cost_amount': 'sum',
-        'platform': 'first' 
-    }).reset_index()
-    
-    holdings = summary[summary['quantity'] > 0.00001].copy()
+    portfolio = {} 
+
+    for index, row in df.iterrows():
+        ticker = row['ticker']
+        tx_type = row['type']
+        
+        if tx_type not in ['BUY', 'SELL']: continue
+            
+        if ticker not in portfolio:
+            portfolio[ticker] = {
+                'qty': 0.0, 
+                'total_cost': 0.0, 
+                'platform': row['platform']
+            }
+        
+        if tx_type == 'BUY':
+            buy_cost = row['quantity'] * row['price']
+            portfolio[ticker]['qty'] += row['quantity']
+            portfolio[ticker]['total_cost'] += buy_cost
+            portfolio[ticker]['platform'] = row['platform'] 
+            
+        elif tx_type == 'SELL':
+            current_qty = portfolio[ticker]['qty']
+            if current_qty > 0:
+                avg_cost_per_share = portfolio[ticker]['total_cost'] / current_qty
+                
+                cost_removed = avg_cost_per_share * row['quantity']
+                
+                portfolio[ticker]['qty'] -= row['quantity']
+                portfolio[ticker]['total_cost'] -= cost_removed
+            else:
+                pass
+
+    data = []
+    for ticker, values in portfolio.items():
+        if values['qty'] > 0.00001:
+            data.append({
+                'ticker': ticker,
+                'quantity': values['qty'],
+                'cost_amount': values['total_cost'], 
+                'platform': values['platform']
+            })
+            
+    if not data:
+         return pd.DataFrame(), 0.0, 0.0, 0.0
+
+    holdings = pd.DataFrame(data)
     
     live_fx = get_current_fx_rate()
     
@@ -64,14 +123,15 @@ def calculate_portfolio(df):
     pnl_values = []
     pnl_percents = []
     asset_categories = [] 
+    asset_sectors = []
     
     for index, row in holdings.iterrows():
         ticker = row['ticker']
         qty = row['quantity']
         total_cost = row['cost_amount']
         
-    
         this_category = classify_asset(ticker, row['platform'])
+        this_sector = get_stock_sector(ticker)
         
         try:
             stock = yf.Ticker(ticker)
@@ -92,6 +152,7 @@ def calculate_portfolio(df):
         pnl_values.append(unrealized_pnl)
         pnl_percents.append(pnl_percent)
         asset_categories.append(this_category)
+        asset_sectors.append(this_sector)
 
     holdings['Current Price'] = current_prices
     holdings['Market Value'] = market_values
@@ -99,7 +160,8 @@ def calculate_portfolio(df):
     holdings['Unrealized P/L'] = pnl_values
     holdings['% P/L'] = pnl_percents
     holdings['Category'] = asset_categories 
-   
+    holdings['Sector'] = asset_sectors
+    
     total_portfolio_val_thb = holdings['Market Value'].sum() * live_fx
     total_cost_thb = holdings['Cost Basis'].sum() * live_fx
     total_pnl_thb = total_portfolio_val_thb - total_cost_thb
@@ -146,7 +208,7 @@ with st.sidebar:
             with col1: 
                 qty = st.number_input("Quantity", min_value=0.0, format="%.4f")
             with col2: 
-                price = st.number_input("Price ($)", min_value=0.0, format="%.2f")
+                price = st.number_input("Price per Share", min_value=0.0, format="%.2f")
             
             fee = st.number_input("Fee ($)", min_value=0.0, format="%.2f")
             
@@ -208,7 +270,7 @@ with tab1:
 
         st.subheader(" Asset Allocation")
         
-        c_chart1, c_chart2 = st.columns(2)
+        c_chart1, c_chart2, c_chart3 = st.columns(3)
         
         with c_chart1:
             st.caption("By Ticker")
@@ -232,6 +294,39 @@ with tab1:
                 ax2.axis('equal')
                 fig2.patch.set_alpha(0)
                 st.pyplot(fig2, use_container_width=True)
+
+        with c_chart3:
+            st.caption("By Sector (Industry)")
+            if 'Sector' in holdings_df.columns:
+                sector_df = holdings_df.groupby('Sector')['Market Value'].sum()
+                
+                fig3, ax3 = plt.subplots(figsize=(6, 6))
+                
+                wedges, texts, autotexts = ax3.pie(
+                    sector_df, 
+                    labels=None, 
+                    autopct='%1.1f%%', 
+                    startangle=90,
+                    pctdistance=0.85, 
+                    textprops={'fontsize': 10, 'color': 'white'}
+                )
+                
+               
+                centre_circle = plt.Circle((0,0), 0.70, fc='#0E1117') 
+                fig3.gca().add_artist(centre_circle)
+                
+                ax3.axis('equal')
+                
+                ax3.legend(wedges, sector_df.index,
+                          title="Sectors",
+                          loc="upper center",
+                          bbox_to_anchor=(0.5, 0), 
+                          ncol=2, 
+                          frameon=False, 
+                          labelcolor='white') 
+                
+                fig3.patch.set_alpha(0)
+                st.pyplot(fig3, use_container_width=True)
 
         st.divider()
 
