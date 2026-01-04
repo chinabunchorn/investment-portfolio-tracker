@@ -10,6 +10,15 @@
 <img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/1607a44d-e3f5-4fef-a6e4-a3e3992c72c6" />
 
 ---
+### Usage Guide
+
+This tracker is designed for **Manual Entry** to give you full control.
+
+1.  **Select Date:** Choose the actual transaction date.
+2.  **Input Data:** Enter Ticker, Quantity, Price, and Fees exactly as shown on your Broker's trade confirmation (e.g., Dime, Binance, Streaming).
+3.  **Track:** The app calculates your Average Cost, Realized/Unrealized P/L based on these inputs.
+
+> *Tip: Inputting accurate fees helps in calculating the precise Net Profit.*
 
 ##  Key Features
 
