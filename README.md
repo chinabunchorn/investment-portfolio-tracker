@@ -1,15 +1,49 @@
-# investment-portfolio-tracker
-Personal Portfolio Tracker MVP
+# Personal Wealth Dashboard & Portfolio Tracker
 
-The Reason why I built this: I needed a lightweight tool to track my portfolio, which uses many brokers.
 
-I invest in both US stocks (Dime) and Cryptocurrency (Binance).
-These assets are highly volatile and correlated, but the data is stored in separate platforms.
-Because of this, I cannot clearly see my total portfolio risk. I regularly invest using DCA (Dollar-Cost Averaging).
-I want to be able to add and track transactions manually, store them in a database, and keep them as evidence for tax filing(further, when I have a salary).
+> **Live** https://personal-portfolio-tracker.streamlit.app
+> *(The demo comes with pre-loaded sample data )*
 
-My portfolio includes assets in both THB and USD.
-To see the real portfolio value, I need to calculate it using real-time FX rates, not just the numbers shown by brokers or exchanges.
+---
 
-Most portfolio-tracking tools in the market are monthly subscription-based.
-As a student, I want to save costs, so I decided to build this system myself.
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/34fef51b-9d3b-4a84-84c0-8df2bf70c17f" />
+<img width="1919" height="1079" alt="image" src="https://github.com/user-attachments/assets/1607a44d-e3f5-4fef-a6e4-a3e3992c72c6" />
+
+---
+
+##  Key Features
+
+
+### Portfolio Management
+- Support for BUY and SELL.
+- Track Stocks (US/Thai), ETFs, and Cryptocurrencies via `yfinance`.
+- Automatically fetches live prices to calculate Net Worth.
+
+### Performance Analysis
+- Compare your portfolio  vs. **S&P 500**.
+- Calculate **Max Drawdown** to see how your portfolio is compared to the market.
+- Charts powered by `Matplotlib` and `Plotly`.
+- fetch **P/E Ratios**, **Analyst Ratings**, and calculate **PEG Ratios** (using historical EPS growth) to spot overvalued assets.
+
+
+### Data Handling
+- Uses `SQLite` 
+- sample data (NVDA, BTC, AAPL) on first launch for testing purposes.
+
+---
+
+## Tech Stack
+
+- **Frontend/UI:** Streamlit
+- **Data Manipulation:** Pandas, NumPy
+- **Financial Data:** yfinance API
+- **Visualization:** Plotly, Matplotlib
+- **Database:** SQLite3
+
+---
+
+##  How to Run Locally
+1. **Clone the repository**
+2. pip install -r requirements.txt
+3. streamlit run app.py Note: No need to set up the database manually
+4. open in your browser at http://localhost:8501.
