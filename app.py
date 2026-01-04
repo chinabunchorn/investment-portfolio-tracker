@@ -4,7 +4,9 @@ import sqlite3
 import yfinance as yf
 import numpy as np
 import matplotlib.pyplot as plt
+import plotly.express as px
 from datetime import datetime
+
 
 st.set_page_config(page_title="Portfolio Tracker", layout="wide")
 st.title("Wealth Dashboard")
@@ -50,6 +52,27 @@ def get_stock_sector(ticker):
         return sector
     except:
         return "Others"
+    
+WATCHLIST_TICKERS = [
+    "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", 
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META",
+    "AMD", "PLTR", "COIN", "MSTR", "SMCI", "ARM", "AVGO", "NFLX", "ASML", "INTC",
+    "BRK-B", "JPM", "LLY", "NVO", "TSM" ,"OKLO", "CRWD","DUOL","RBLX","SNOW"
+]
+    
+@st.cache_data(ttl=3600*24) 
+def get_correlation_matrix(tickers):
+    try:
+        data = yf.download(tickers, period="2mo", progress=False)['Close']
+        
+        returns = data.pct_change()
+        
+        corr_matrix = returns.corr()
+        
+        return corr_matrix
+    except Exception as e:
+        st.error(f"Error calculating correlation: {e}")
+        return pd.DataFrame()
     
 @st.cache_data(ttl=300)
 def get_market_movers():
@@ -104,6 +127,12 @@ def classify_asset(ticker, platform):
         return "Cash "
         
     return "Stock"
+
+def calculate_max_drawdown(cumulative_returns):
+    peak = cumulative_returns.cummax()
+    drawdown = (cumulative_returns - peak) / peak
+    max_drawdown = drawdown.min() * 100 
+    return max_drawdown
 
 @st.cache_data(ttl=3600*12)
 def get_performance_chart(transactions_df):
@@ -470,12 +499,45 @@ with tab2:
             hide_index=True
         )
     else:
-        st.warning("Fetching market data failed. Please try again later.")                   
+        st.warning("Fetching market data failed. Please try again later.")    
+
+        st.subheader("Correlation Heatmap")
+    st.caption("Shows how assets move in relation to each other over the past month")
+    
+    with st.spinner("Calculating correlations..."):
+        corr_df = get_correlation_matrix(WATCHLIST_TICKERS)
+        
+        if not corr_df.empty:
+            fig = px.imshow(
+                corr_df,
+                text_auto=False, #
+                aspect="auto",
+                color_continuous_scale='RdBu_r', 
+                origin='lower'
+            )
+            
+            fig.update_layout(
+                width=800,
+                height=800, 
+                xaxis_title=None,
+                yaxis_title=None
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            with st.expander("How to Read the Correlation Matrix"):
+                st.write("""
+                - **Red (near 1.0):** **"Highly Correlated"** prices move in the same direction (can amplify risk)
+                - **White/Grey (near 0):** **"Unrelated"** prices don't correlate (good for diversification)
+                - **Blue (near -1.0):** **"Inversely Correlated"** prices move in opposite directions (can hedge risk)
+                """)
+        else:
+            st.warning("Could not calculate correlation data.")               
 
 with tab3:
     st.subheader("Portfolio Performance vs S&P 500")
     st.caption("Normalized to 100 (Time-Weighted Return)")
-
+    
     if not raw_df.empty:
         with st.spinner("Crunching numbers... (downloading history)"):
             perf_df = get_performance_chart(raw_df)
@@ -486,17 +548,48 @@ with tab3:
             total_return = perf_df['My Portfolio'].iloc[-1] - 100
             market_return = perf_df['S&P 500'].iloc[-1] - 100
             
+            my_mdd = calculate_max_drawdown(perf_df['My Portfolio'])
+            sp500_mdd = calculate_max_drawdown(perf_df['S&P 500'])
+
+            
+            st.markdown("#### Return Analysis")
             c1, c2 = st.columns(2)
-            c1.metric("My Return (Time-Weighted)", f"{total_return:+.2f}%")
+            c1.metric("My Return", f"{total_return:+.2f}%")
             c2.metric("S&P 500 Return", f"{market_return:+.2f}%", 
-                    delta=f"{total_return - market_return:+.2f}% vs Market")
+                      delta=f"{total_return - market_return:+.2f}% vs Market")
+            
+            st.divider()
+            
+            st.markdown("#### Risk Analysis (Max Drawdown)")
+            st.caption("Max Drawdown is the largest peak-to-trough decline in portfolio value(starting indicate at your initial investment).")
+            
+            r1, r2 = st.columns(2)
+            
+         
+            delta_risk = my_mdd - sp500_mdd 
+            
+            r1.metric("My Max Drawdown", f"{my_mdd:.2f}%", 
+                      help="The largest peak-to-trough decline in your portfolio value.")
+            
+            r2.metric("S&P 500 Max Drawdown", f"{sp500_mdd:.2f}%",
+                      delta=f"{delta_risk:+.2f}% (Your resilience)",
+                      delta_color="normal" if my_mdd > sp500_mdd else "inverse") 
+
+            if my_mdd > sp500_mdd:
+                st.success(f"Excellent: Your portfolio is more resilient than the market (max drawdown only {my_mdd:.2f}%)")
+            else:
+                st.warning(f"Caution: Your portfolio has higher drawdown than the market ({my_mdd:.2f}%)")
+
         else:
             st.warning("Not enough data to calculate performance.")
     else:
         st.info("No transactions found.")
 
 with st.expander("Debug Data"):
-    st.write("Portfolio Values:", perf_df.head())
+    if 'perf_df' in locals() and not perf_df.empty:
+        st.write("Portfolio Values:", perf_df.head())
+    else:
+        st.write("No performance data generated yet.")
 
 with st.sidebar:
     st.divider()
