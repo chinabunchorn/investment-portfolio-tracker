@@ -49,6 +49,48 @@ def get_stock_sector(ticker):
         return sector
     except:
         return "Others"
+    
+@st.cache_data(ttl=300)
+def get_market_movers():
+
+    tickers = [
+        "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", 
+        "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META",
+        "AMD", "PLTR", "COIN", "MSTR", "SMCI", "ARM", "AVGO", "NFLX", "ASML", "INTC",
+        "BRK-B", "JPM", "LLY", "NVO", "TSM" ,"OKLO", "CRWD","DUOL","RBLX","SNOW"
+    ]
+    
+    data = []
+    
+    for t in tickers:
+        try:
+            stock = yf.Ticker(t)
+            hist = stock.history(period="2d") 
+            
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                curr_price = hist['Close'].iloc[-1]
+                change = curr_price - prev_close
+                pct_change = (change / prev_close) * 100
+                
+                asset_type = "Crypto" if "-USD" in t else "Stock 🇺🇸"
+                
+                data.append({
+                    "Ticker": t,
+                    "Price": curr_price,
+                    "Change $": change,
+                    "% Change": pct_change,
+                    "Type": asset_type
+                })
+        except:
+            continue
+            
+    df = pd.DataFrame(data)
+    
+    if not df.empty:
+        df = df.sort_values(by="% Change", ascending=False)
+        
+    return df
 
 def classify_asset(ticker, platform):
     if platform in ["Binance"]: 
@@ -250,7 +292,7 @@ with st.sidebar:
 
 raw_df = load_data()
 
-tab1, tab2 = st.tabs(["Dashboard", "Raw Data"])
+tab1,tab2 ,tab3 = st.tabs(["Dashboard", "Market Movers", "Raw Data"])
 
 with tab1:
     if raw_df.empty:
@@ -362,5 +404,50 @@ with tab1:
                     c5.caption(f"Total Cost: ฿{cost_basis:,.2f}")
 
 with tab2:
+    st.subheader("Market Movers (Top Tech & Crypto)")
+    st.caption("last updated from Yahoo Finance watchlist")
+    
+    movers_df = get_market_movers()
+    
+    if not movers_df.empty:
+        col_gain, col_lose = st.columns(2)
+        
+        with col_gain:
+            st.success("Top 5 Gainers")
+            top_gainers = movers_df.head(5)
+            for i, row in top_gainers.iterrows():
+                st.metric(
+                    label=f"{row['Ticker']} ({row['Type']})",
+                    value=f"${row['Price']:,.2f}",
+                    delta=f"+{row['% Change']:.2f}%"
+                )
+        
+        with col_lose:
+            st.error("Top 5 Losers")
+            top_losers = movers_df.tail(5).sort_values(by="% Change", ascending=True) 
+            for i, row in top_losers.iterrows():
+                st.metric(
+                    label=f"{row['Ticker']} ({row['Type']})",
+                    value=f"${row['Price']:,.2f}",
+                    delta=f"{row['% Change']:.2f}%" 
+                )
+        
+        st.divider()
+        st.subheader("Full Watchlist Ranking")
+        
+        st.dataframe(
+            movers_df,
+            use_container_width=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Change $": st.column_config.NumberColumn(format="$%.2f"),
+                "% Change": st.column_config.NumberColumn(format="%.2f%%"),
+            },
+            hide_index=True
+        )
+    else:
+        st.warning("Fetching market data failed. Please try again later.")                   
+
+with tab3:
     st.subheader("Transaction History")
     st.dataframe(raw_df, use_container_width=True)
