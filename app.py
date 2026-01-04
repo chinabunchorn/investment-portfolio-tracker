@@ -8,21 +8,64 @@ import plotly.express as px
 from datetime import datetime
 
 
-st.set_page_config(page_title="Portfolio Tracker", layout="wide")
-st.title("Wealth Dashboard")
+st.set_page_config(page_title="Wealth Dashboard", layout="wide") 
+DB_NAME = "portfolio.db"
 
-DB_NAME = 'portfolio.db'
 
+def get_db_connection():
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    c = conn.cursor()
+    
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            type TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            price REAL NOT NULL,
+            fee REAL NOT NULL,
+            platform TEXT
+        )
+    """)
+    conn.commit()
+    
+    try:
+        c.execute("SELECT count(*) FROM transactions")
+        if c.fetchone()[0] == 0:
+            print("Injecting Demo Data...") 
+            demo_sql = """
+                INSERT INTO transactions (date, ticker, type, quantity, price, fee, platform) VALUES 
+                ('2020-05-15', 'NVDA', 'BUY', 10, 35.0, 1.0, 'Dime'), 
+                ('2021-08-20', 'MSFT', 'BUY', 5, 290.0, 2.0, 'Dime'),
+                ('2023-01-10', 'BTC-USD', 'BUY', 0.1, 17500.0, 0.0, 'Binance'),
+                ('2023-06-15', 'AAPL', 'BUY', 20, 180.0, 1.5, 'Dime'),
+                ('2024-01-05', 'TSM', 'BUY', 15, 100.0, 1.0, 'Dime');
+            """
+            c.executescript(demo_sql)
+            conn.commit()
+    except Exception as e:
+        st.error(f"Error checking/inserting data: {e}")
+
+    return conn
+
+
+conn = get_db_connection()
+
+def load_data():
+    try:
+        return pd.read_sql("SELECT * FROM transactions ORDER BY date DESC", conn)
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame()
+    
 def run_query(query, params=()):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute(query, params)
         conn.commit()
         return cursor
-
-def load_data():
-    with sqlite3.connect(DB_NAME) as conn:
-        return pd.read_sql("SELECT * FROM transactions ORDER BY date DESC", conn)
+    
 
 def get_current_fx_rate():
     try:
@@ -133,6 +176,42 @@ def calculate_max_drawdown(cumulative_returns):
     drawdown = (cumulative_returns - peak) / peak
     max_drawdown = drawdown.min() * 100 
     return max_drawdown
+
+def get_real_peg(ticker, current_pe):
+    
+    try:
+        stock = yf.Ticker(ticker)
+        
+        financials = stock.financials 
+        
+        if financials.empty:
+            return None
+
+        if 'Diluted EPS' in financials.index:
+            eps_row = financials.loc['Diluted EPS']
+        elif 'Basic EPS' in financials.index:
+            eps_row = financials.loc['Basic EPS']
+        else:
+            return None
+        
+        latest_eps = eps_row.iloc[0]
+        oldest_eps = eps_row.iloc[-1]
+        years_diff = len(eps_row) - 1 
+        
+        if years_diff < 1 or oldest_eps <= 0 or latest_eps <= 0:
+            return None 
+
+        cagr = ( (latest_eps / oldest_eps) ** (1 / years_diff) ) - 1
+        growth_rate = cagr * 100 
+        
+        if growth_rate > 0:
+            real_peg = current_pe / growth_rate
+            return real_peg, growth_rate 
+        else:
+            return None, growth_rate
+
+    except Exception as e:
+        return None, None
 
 @st.cache_data(ttl=3600*12)
 def get_performance_chart(transactions_df):
@@ -359,11 +438,13 @@ with st.sidebar:
 raw_df = load_data()
 
 tab1,tab2 ,tab3, tab4 = st.tabs(["Dashboard", "Market Movers", "Performance Chart", "Transactions"])
+
 with tab1:
     if raw_df.empty:
         st.info("Please add your first transaction.")
     else:
-        holdings_df, _, _, _, total_realized = calculate_portfolio(raw_df)
+        with st.spinner("Calculating Portfolio & Fetching Fundamentals..."):
+            holdings_df, _, _, _, total_realized = calculate_portfolio(raw_df)
         
         if not holdings_df.empty:
             
@@ -373,6 +454,10 @@ with tab1:
             pnl_percents = []
             asset_sectors = []
             
+            pe_ratios = []
+            peg_ratios = []
+            recommendations = []
+            
             for index, row in holdings_df.iterrows():
                 ticker = row['ticker']
                 qty = row['quantity']
@@ -380,10 +465,41 @@ with tab1:
                 
                 this_sector = get_stock_sector(ticker)
                 
+                current_price = 0
+                pe = "N/A"
+                peg = "N/A"
+                rec = "N/A"
+
                 try:
                     stock = yf.Ticker(ticker)
+                    
                     history = stock.history(period="1d")
                     current_price = history['Close'].iloc[-1] if not history.empty else 0
+                    
+                  
+                    info = stock.info
+                    
+                    pe = info.get('forwardPE', info.get('trailingPE', None))
+                
+                    peg = info.get('pegRatio', None)
+                    growth_display = None 
+                    if (peg is None or peg > 5) and pe is not None:
+                        real_peg, calc_growth = get_real_peg(ticker, pe)
+                        
+                        if real_peg is not None:
+                            peg = real_peg
+                            growth_display = calc_growth
+                            peg_source = "(Historical CAGR)" 
+                        else:
+                            peg_source = "(Yahoo Default)"
+                    else:
+                        peg_source = ""
+                            
+                    rec = info.get('recommendationKey', 'N/A').upper().replace('_', ' ') 
+                    
+                except Exception as e:
+                    pe, peg, rec = None, None, "N/A"
+                    
                 except:
                     current_price = 0
                 
@@ -393,7 +509,6 @@ with tab1:
                      price_in_thb = current_price
 
                 market_value = qty * price_in_thb
-               
                 
                 cost_basis_thb = cost_basis * live_fx 
                 
@@ -405,12 +520,20 @@ with tab1:
                 pnl_values.append(unrealized_pnl)
                 pnl_percents.append(pnl_percent)
                 asset_sectors.append(this_sector)
+                
+                pe_ratios.append(pe)
+                peg_ratios.append(peg)
+                recommendations.append(rec)
 
             holdings_df['Current Price'] = current_prices
             holdings_df['Market Value'] = market_values
             holdings_df['Unrealized P/L'] = pnl_values
             holdings_df['% P/L'] = pnl_percents
             holdings_df['Sector'] = asset_sectors
+            
+            holdings_df['PE'] = pe_ratios
+            holdings_df['PEG'] = peg_ratios
+            holdings_df['Rec'] = recommendations
             
             total_value = holdings_df['Market Value'].sum()
             total_cost_thb = (holdings_df['cost_amount'] * live_fx).sum() 
@@ -430,29 +553,101 @@ with tab1:
             st.subheader("Asset Allocation")
             c1, c2 = st.columns(2)
             with c1:
-                fig, ax = plt.subplots(figsize=(6, 6))
-                ax.pie(holdings_df['Market Value'], labels=holdings_df['ticker'], autopct='%1.1f%%', textprops={'color':"white"})
-                fig.patch.set_alpha(0)
-                st.pyplot(fig, use_container_width=True)
+                plot_data = holdings_df[holdings_df['Market Value'] > 0]
+                if not plot_data.empty:
+                    fig, ax = plt.subplots(figsize=(6, 6))
+                    ax.pie(plot_data['Market Value'], labels=plot_data['ticker'], autopct='%1.1f%%', textprops={'color':"white"})
+                    fig.patch.set_alpha(0)
+                    st.pyplot(fig, use_container_width=True)
             
             with c2:
                 if 'Sector' in holdings_df.columns:
                     sector_df = holdings_df.groupby('Sector')['Market Value'].sum()
-                    fig2, ax2 = plt.subplots(figsize=(6, 6))
-                    ax2.pie(sector_df, labels=sector_df.index, autopct='%1.1f%%', textprops={'color':"white"})
-                    fig2.patch.set_alpha(0)
-                    st.pyplot(fig2, use_container_width=True)
+                    sector_plot = sector_df[sector_df > 0]  
+                    if not sector_plot.empty:
+                        fig2, ax2 = plt.subplots(figsize=(6, 6))
+                        ax2.pie(sector_plot, labels=sector_plot.index, autopct='%1.1f%%', textprops={'color':"white"})
+                        fig2.patch.set_alpha(0)
+                        st.pyplot(fig2, use_container_width=True)
 
             st.divider()
 
             st.subheader("Current Holdings")
+            
             for index, row in holdings_df.iterrows():
-                with st.expander(f"{row['ticker']} | ฿{row['Market Value']:,.0f}"):
+               
+                pe = None
+                peg = None
+                rec = "N/A"
+                peg_source = ""        
+                growth_display = None  
+
+                ticker_color = "green" if row['Unrealized P/L'] >= 0 else "red"
+                expander_title = f":{ticker_color}[{row['ticker']}]| ฿{row['Market Value']:,.0f}"
+                
+                with st.expander(expander_title):
                      c1, c2, c3 = st.columns(3)
                      c1.metric("Qty", f"{row['quantity']:,.4f}")
                      c2.metric("Avg Cost ($)", f"${row['cost_amount']/row['quantity']:,.2f}")
-                     c3.metric("Price ($)", f"${row['Current Price']:,.2f}")
-                     st.metric("P/L (THB)", f"฿{row['Unrealized P/L']:,.0f}", delta=f"{row['% P/L']:.2f}%")
+                     c3.metric("P/L (THB)", f"฿{row['Unrealized P/L']:,.0f}", delta=f"{row['% P/L']:.2f}%")
+                     
+                     st.divider()
+                     
+                     
+                     try:
+                        stock = yf.Ticker(row['ticker'])
+                        info = stock.info
+                        
+                        # 1. P/E
+                        pe = info.get('forwardPE', info.get('trailingPE', None))
+                        
+                        # 2. Analyst Rec
+                        rec = info.get('recommendationKey', 'N/A').upper().replace('_', ' ')
+
+                        # 3. PEG Calculation
+                        peg = info.get('pegRatio', None)
+                        
+                        # Logic คำนวณเอง 
+                        if (peg is None or peg > 5) and pe is not None:
+                            real_peg, calc_growth = get_real_peg(row['ticker'], pe)
+                            if real_peg is not None:
+                                peg = real_peg
+                                growth_display = calc_growth
+                                peg_source = "(Historical CAGR)"
+                            else:
+                                peg_source = "" # คำนวณไม่ได้
+                        else:
+                             # ค่า< 5 ปกติ
+                             if peg is not None:
+                                peg_source = "" 
+
+                     except Exception as e:
+                        # ถ้าดึงข้อมูลไม่ได้
+                        pass
+                     
+                   
+                     st.caption("Fundamental Health Check")
+                     f1, f2, f3 = st.columns(3)
+                     
+                     # 1. P/E Ratio
+                     f1.metric("P/E Ratio", f"{pe:.2f}" if isinstance(pe, (int, float)) else "nan")
+                     
+                     # 2. PEG Ratio
+                     help_str = "PEG < 1 = Undervalued"
+                     if growth_display:
+                         help_str += f"\nCalculated based on {growth_display:.2f}% Historical Growth"
+                     
+                     # Format 
+                     if isinstance(peg, (int, float)):
+                         peg_str = f"{peg:.2f} {peg_source}"
+                     else:
+                         peg_str = "" 
+                     
+                     f2.metric("PEG Ratio", peg_str, help=help_str)
+                     
+                     # 3. Analyst Rec
+                     f3.metric("Analyst Rec", rec)
+
         else:
             st.info("No active stock holdings found.")
 
@@ -593,7 +788,7 @@ with st.expander("Debug Data"):
 
 with st.sidebar:
     st.divider()
-    st.caption("Danger Zone")
+    st.caption("Database Management")
     if st.button("Reset All Data (Clear DB)"):
         try:
             import os
@@ -604,6 +799,13 @@ with st.sidebar:
                 st.warning("Database not found.")
         except Exception as e:
             st.error(f"Error: {e}")
+
+    with open(DB_NAME, "rb") as fp:
+        btn = st.download_button(
+            label="💾 Backup Database (Download .db)",
+            data=fp,
+            file_name="portfolio_backup.db",
+            mime="application/x-sqlite3")
 
 with tab4:
     st.subheader("Transaction History")
