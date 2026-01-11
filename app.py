@@ -20,12 +20,16 @@ def get_db_connection():
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL,
-            ticker TEXT NOT NULL,
             type TEXT NOT NULL,
-            quantity REAL NOT NULL,
-            price REAL NOT NULL,
-            fee REAL NOT NULL,
-            platform TEXT
+            platform TEXT,
+            ticker TEXT,
+            quantity REAL,
+            price REAL,
+            fee REAL,
+            currency TEXT,
+            fx_rate REAL,
+            wht REAL,
+            notes TEXT
         )
     """)
     conn.commit()
